@@ -3,7 +3,7 @@ from server import AdaptiveRetina
 
 def test_retina():
     print("Initializing Retina...")
-    retina = AdaptiveRetina(camera_index=0)
+    retina = AdaptiveRetina(default_camera_index=0)
     
     print("Starting Retina (Interval: 1.0s)...")
     retina.set_interval(1.0)
@@ -22,6 +22,9 @@ def test_retina():
         
         if status == "SIGHT":
             print(f"Image captured! Length: {len(vision['image_base64'])} chars")
+            meta = vision.get('meta', {})
+            print(f"Sensory Data - Brightness: {meta.get('brightness')}, Motion: {meta.get('motion')}")
+            print(f"Metabolism - Interval: {meta.get('interval')}s, Camera: {meta.get('camera_id')}")
             break
         else:
             print(f"Message: {vision.get('message')}")

@@ -13,18 +13,29 @@ logger = logging.getLogger("OpticNerve")
 
 class AdaptiveRetina:
     """
-    Biological-grade vision sensor manager.
-    Implements Zero-Stack Architecture with Latest Frame Drop strategy.
+    Biological-grade vision sensor manager (v2).
+    Features: Zero-Stack, Sensory Qualia, Metabolic Regulation, Failover.
     """
-    def __init__(self, camera_index: int = 0):
-        self.camera_index = camera_index
-        self.interval_seconds = 5.0  # Default: 5 seconds (Low metabolism)
+    def __init__(self, default_camera_index: int = 0):
+        self.camera_index = default_camera_index
+        self.interval_seconds = 5.0
         self.current_buffer: Optional[bytes] = None
         self.last_capture_time = 0.0
         self.running = False
         self.lock = threading.Lock()
         self.thread: Optional[threading.Thread] = None
         self._camera_error = False
+        
+        # v2: Sensory State
+        self.prev_frame_gray = None
+        self.current_brightness = 0.0
+        self.current_motion = 0.0
+        
+        # v2: Metabolism
+        self.last_access_time = time.time()
+        self.base_interval = 5.0
+        self.hibernation_threshold = 300.0 # 5 minutes
+        self.hibernation_interval = 60.0   # 1 frame/min when ignored
 
     def start(self):
         """Opens the eye."""
@@ -33,7 +44,7 @@ class AdaptiveRetina:
         self.running = True
         self.thread = threading.Thread(target=self._visual_cortex_loop, daemon=True)
         self.thread.start()
-        logger.info("Optic Nerve activated.")
+        logger.info("Optic Nerve v2 activated.")
 
     def stop(self):
         """Closes the eye."""
@@ -43,52 +54,99 @@ class AdaptiveRetina:
         logger.info("Optic Nerve deactivated.")
 
     def set_interval(self, interval: float):
-        """Adjusts the heartbeat of the retina."""
-        self.interval_seconds = max(0.0, interval)
-        logger.info(f"Retina interval adjusted to {self.interval_seconds}s")
+        """Adjusts the base heartbeat."""
+        self.base_interval = max(0.0, interval)
+        self.interval_seconds = self.base_interval
+        self.last_access_time = time.time() # Reset hibernation timer
+        logger.info(f"Retina base interval adjusted to {self.base_interval}s")
+
+    def _calculate_qualia(self, frame):
+        """Computes sensory metadata (Brightness, Motion)."""
+        # Convert to grayscale for analysis
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # 1. Brightness (0-255)
+        brightness = np.mean(gray)
+        
+        # 2. Motion (Difference from previous frame)
+        motion = 0.0
+        if self.prev_frame_gray is not None:
+            # Calculate absolute difference
+            diff = cv2.absdiff(self.prev_frame_gray, gray)
+            motion = np.mean(diff)
+        
+        self.prev_frame_gray = gray
+        return brightness, motion
+
+    def _try_open_camera(self):
+        """Attempts to open cameras, failing over if needed."""
+        # Try current index first
+        cap = cv2.VideoCapture(self.camera_index)
+        if cap.isOpened():
+            return cap
+        
+        # Failover: Try indices 0-3
+        logger.warning(f"Camera {self.camera_index} failed. Initiating failover scan...")
+        for i in range(4):
+            if i == self.camera_index: continue
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                logger.info(f"Failover successful: Switched to Camera {i}")
+                self.camera_index = i
+                return cap
+        
+        return None
 
     def _visual_cortex_loop(self):
-        """
-        The main loop. Captures reality.
-        Patiently waits if the interval is long.
-        """
+        """The main loop. Captures reality and manages energy."""
         cap = None
         
         while self.running:
             try:
+                # Metabolic Regulation
+                time_since_access = time.time() - self.last_access_time
+                if time_since_access > self.hibernation_threshold:
+                    self.interval_seconds = self.hibernation_interval
+                else:
+                    self.interval_seconds = self.base_interval
+
                 # Open camera if not open
                 if cap is None or not cap.isOpened():
-                    cap = cv2.VideoCapture(self.camera_index)
-                    if not cap.isOpened():
-                        logger.error("Retina failed to open. Retrying in 5s...")
+                    cap = self._try_open_camera()
+                    if cap is None:
+                        logger.error("All optic inputs failed. Retrying in 5s...")
                         self._camera_error = True
                         time.sleep(5)
                         continue
                     self._camera_error = False
-                    logger.info("Retina connected.")
+                    logger.info(f"Retina connected (Cam {self.camera_index}).")
 
                 # Check if it's time to capture
                 now = time.time()
                 if now - self.last_capture_time >= self.interval_seconds:
                     ret, frame = cap.read()
                     if ret:
-                        # Encode to JPEG immediately to save memory
+                        # Analyze Qualia (Sensory Data)
+                        brightness, motion = self._calculate_qualia(frame)
+                        
+                        # Encode
                         _, buffer = cv2.imencode('.jpg', frame)
                         jpg_as_text = base64.b64encode(buffer).decode('utf-8')
                         
-                        # Zero-Stack: Overwrite the single buffer slot
+                        # Zero-Stack Update
                         with self.lock:
                             self.current_buffer = jpg_as_text
+                            self.current_brightness = brightness
+                            self.current_motion = motion
                         
                         self.last_capture_time = now
                     else:
-                        logger.warning("Retina captured void (empty frame).")
+                        logger.warning("Retina captured void.")
                         self._camera_error = True
                         cap.release()
                         cap = None
                 
-                # Sleep briefly to prevent CPU burn, but stay responsive
-                # If interval is 0 (max speed), sleep minimal amount
+                # Sleep logic
                 sleep_time = min(0.1, self.interval_seconds) if self.interval_seconds > 0 else 0.001
                 time.sleep(sleep_time)
 
@@ -100,26 +158,32 @@ class AdaptiveRetina:
             cap.release()
 
     def get_vision(self) -> Dict[str, Any]:
-        """
-        Retrieves the latest visual memory.
-        """
+        """Retrieves the latest visual memory with sensory metadata."""
+        # Touch the nerve (reset hibernation)
+        self.last_access_time = time.time()
+        
         with self.lock:
             if self._camera_error:
                 return {
                     "status": "BLIND",
-                    "error": "Camera disconnected or inaccessible.",
+                    "error": "All cameras disconnected.",
                     "timestamp": time.time()
                 }
             if self.current_buffer is None:
                 return {
                     "status": "DARKNESS",
-                    "message": "No photons captured yet. Initializing...",
+                    "message": "Initializing...",
                     "timestamp": time.time()
                 }
             return {
                 "status": "SIGHT",
                 "image_base64": self.current_buffer,
-                "interval_setting": self.interval_seconds,
+                "meta": {
+                    "brightness": round(self.current_brightness, 2),
+                    "motion": round(self.current_motion, 2),
+                    "interval": self.interval_seconds,
+                    "camera_id": self.camera_index
+                },
                 "timestamp": self.last_capture_time
             }
 
